@@ -139,6 +139,7 @@ curl -X POST http://127.0.0.1:8000/bookings/ \
 ## Database / Schema Design
 
 ### Entity-Relationship Overview
+<img width="1025" height="551" alt="Screenshot 2026-09-27 at 4 44 44 PM" src="https://github.com/user-attachments/assets/9894ac7e-2362-4390-a008-348e1eb2683b" />
 
 ```
 users ──< bookings >── diagnostic_tests >── diagnostic_centres
