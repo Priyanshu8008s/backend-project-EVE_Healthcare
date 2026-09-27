@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: eve_user
+      POSTGRES_PASSWORD: eve_password
+      POSTGRES_DB: eve_diagnostic
+    ports:
+      - "5432:5432"
