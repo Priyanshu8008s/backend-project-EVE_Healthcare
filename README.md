@@ -7,9 +7,9 @@ A production-ready RESTful API built with **FastAPI** and **PostgreSQL** that po
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [API Endpoints & Example Requests](#api-endpoints--example-requests)
-3. [How to Run Locally](#how-to-run-locally)
-4. [Database / Schema Design](#database--schema-design)
+2. [How to Run Locally](#how-to-run-locally)
+3. [Database / Schema Design](#database--schema-design)
+4. [API Endpoints & Example Requests](#api-endpoints--example-requests)
 5. [Important Assumptions](#important-assumptions)
 6. [What I Would Improve With More Time](#what-i-would-improve-with-more-time)
 
