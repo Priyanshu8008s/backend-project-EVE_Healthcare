@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from limiter import limiter
 from sqlalchemy.orm import Session
 
 import jwt
@@ -31,7 +32,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
     status_code=status.HTTP_201_CREATED,
     summary="Register a new user",
 )
-def signup(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
+@limiter.limit("20/minute")  # Prevents automated mass-registration
+def signup(request: Request, user_in: schemas.UserCreate, db: Session = Depends(get_db)):
     """
     Create a new user account.
 
@@ -66,7 +68,9 @@ def signup(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
     response_model=schemas.Token,
     summary="Authenticate and obtain a JWT token",
 )
+@limiter.limit("20/minute")  # Brute-force protection: 20 attempts per minute per IP
 def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):

@@ -24,6 +24,8 @@ A production-ready RESTful API built with **FastAPI** and **PostgreSQL** that po
 | **Auth** | JWT (PyJWT / HS256) + bcrypt password hashing |
 | **Migrations** | Alembic |
 | **Testing** | pytest + httpx (in-memory SQLite override) |
+| **Rate Limiting** | SlowAPI — 20 req/min per IP on auth endpoints |
+| **Structured Logging** | structlog + asgi-correlation-id (JSON-ready, per-request trace IDs) |
 
 Core capabilities:
 
@@ -31,6 +33,9 @@ Core capabilities:
 - **Centres & Tests** — CRUD for diagnostic centres and the tests they offer.
 - **Bookings** — Authenticated appointment booking with server-side price calculation.
 - **Payments** — Simulated payment gateway + idempotent webhook receiver.
+- **Pagination** — `GET /centres/` supports `skip` / `limit` query parameters.
+- **Rate Limiting** — Auth endpoints are protected against brute-force via SlowAPI.
+- **Structured Logging** — Every request emits a structured log with a correlation ID, method, path, status code, and elapsed time.
 
 ---
 
@@ -116,7 +121,7 @@ Use the **Authorize 🔒** button in Swagger to authenticate with a bearer token
 | `POST` | `/auth/signup` | — | Register a new user |
 | `POST` | `/auth/login` | — | Obtain a JWT token |
 | `POST` | `/centres/` | — | Create a diagnostic centre |
-| `GET` | `/centres/` | — | List all centres with their tests |
+| `GET` | `/centres/` | — | List all centres with their tests. Supports pagination: `?skip=0&limit=10` (max `limit=100`) |
 | `POST` | `/centres/{id}/tests/` | — | Add a test to a centre |
 | `POST` | `/bookings/` | ✅ | Create a booking |
 | `POST` | `/payments/` | ✅ | Simulate a payment |
@@ -176,12 +181,23 @@ curl -X POST http://127.0.0.1:8000/bookings/ \
 
 ## What I Would Improve With More Time
 
+### ✅ Bonus Features Already Implemented
+
+The following production-grade improvements were proactively built beyond the core requirements:
+
+| Feature | Implementation |
+|---------|----------------|
+| **Pagination on list endpoints** | `GET /centres/` accepts `?skip=0&limit=10` (capped at 100). Enforced at the Pydantic/FastAPI layer — invalid values return `422` before reaching the DB. |
+| **Rate limiting on auth endpoints** | `POST /auth/signup` and `POST /auth/login` are decorated with `@limiter.limit("20/minute")` via SlowAPI. Exceeding the limit returns `429 Too Many Requests`. |
+| **Structured logging & request tracing** | Every HTTP request logs method, path, status code, and elapsed time via structlog. A `X-Correlation-ID` header is generated per request by `asgi-correlation-id` and bound into every log line automatically. Flip `json_logs=True` in `main.py` for production JSON output. |
+
+---
+
+### 🔭 Further Improvements With More Time
+
 | Feature | Rationale |
 |---------|-----------|
 | **Environment-based configuration** | Move `DATABASE_URL`, `SECRET_KEY`, and `ACCESS_TOKEN_EXPIRE_MINUTES` to a `.env` file loaded via `pydantic-settings`. Eliminates hardcoded secrets. |
 | **Redis caching for `GET /centres/`** | The full centre + tests listing is an expensive query that rarely changes. Caching with a short TTL (e.g., 60 s) would dramatically reduce DB load under traffic. |
-| **Rate limiting on auth endpoints** | Add `slowapi` middleware to cap signup/login attempts per IP, preventing brute-force attacks. |
 | **Celery + Redis for webhook retries** | Instead of processing webhooks synchronously, push them onto a Celery task queue. Failed webhook deliveries would be retried with exponential back-off, making the system resilient to transient DB errors. |
-| **Pagination on list endpoints** | `GET /centres/` currently returns all rows. Adding `limit` / `offset` query parameters (or cursor-based pagination) is essential at scale. |
-| **Structured logging & request tracing** | Integrate `structlog` with a correlation ID per request so distributed traces can be reconstructed in a log aggregation tool. |
 | **Docker Compose for the app itself** | Add a second service to `docker-compose.yml` for the FastAPI app so the entire stack can be started with a single `docker compose up`. |

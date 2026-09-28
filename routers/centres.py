@@ -1,6 +1,6 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 import models
@@ -47,14 +47,21 @@ def create_centre(
     response_model=List[schemas.DiagnosticCentreResponse],
     summary="List all diagnostic centres",
 )
-def list_centres(db: Session = Depends(get_db)):
+def list_centres(
+    skip: int = Query(default=0, ge=0, description="Number of records to skip (offset)"),
+    limit: int = Query(default=10, le=100, description="Maximum number of records to return"),
+    db: Session = Depends(get_db),
+):
     """
-    Return every diagnostic centre along with its associated tests.
+    Return a paginated list of diagnostic centres with their associated tests.
+
+    - `skip`: offset — how many records to skip (default 0).
+    - `limit`: page size — max records to return, capped at 100 (default 10).
 
     FastAPI serialises the ORM relationship automatically via
     `DiagnosticCentreResponse.tests: List[DiagnosticTestResponse]`.
     """
-    return db.query(models.DiagnosticCentre).all()
+    return db.query(models.DiagnosticCentre).offset(skip).limit(limit).all()
 
 
 # ---------------------------------------------------------------------------
