@@ -76,7 +76,32 @@ pytest tests/test_api.py -v
 Tests use an in-memory SQLite database — no running Postgres instance required.
 
 ---
+## Database / Schema Design
 
+### Entity-Relationship Overview
+<img width="1025" height="551" alt="Screenshot 2026-09-27 at 4 44 44 PM" src="https://github.com/user-attachments/assets/9894ac7e-2362-4390-a008-348e1eb2683b" />
+
+```
+users ──< bookings >── diagnostic_tests >── diagnostic_centres
+                │
+                └──< payment_logs
+```
+
+### Table Descriptions
+
+| Table | Purpose |
+|-------|---------|
+| `users` | Stores registered patients. `hashed_password` uses bcrypt; `email` has a unique constraint. |
+| `diagnostic_centres` | Physical locations offering diagnostic services. |
+| `diagnostic_tests` | Individual tests offered by a centre, each with a fixed `price`. |
+| `bookings` | Links a user, test, and centre for a given `appointment_date_time`. `amount` is always copied from the test's price at creation time to prevent spoofing. `status` tracks the payment lifecycle (`PENDING` → `CONFIRMED` / `FAILED`). |
+| `payment_logs` | **Idempotency log** for the webhook endpoint. Every processed `transaction_id` is recorded here. Before updating any booking, the webhook handler checks this table first — if the `transaction_id` already exists, the request is acknowledged and discarded without any DB writes. This prevents duplicate state mutations if the payment gateway retries a webhook. |
+
+### Why `PaymentLog` Is Critical
+
+Without the `PaymentLog` table, a retried webhook could flip a booking's status multiple times (e.g., `CONFIRMED` → `FAILED` → `CONFIRMED`). The log table acts as a **deduplication guard**: the first delivery writes the log and updates the booking atomically; all subsequent deliveries see the existing log entry and short-circuit immediately.
+
+---
 ## API Endpoints & Example Requests
 
 Interactive documentation (Swagger UI) is auto-generated at:
@@ -134,32 +159,6 @@ curl -X POST http://127.0.0.1:8000/bookings/ \
   }'
 ```
 
----
-
-## Database / Schema Design
-
-### Entity-Relationship Overview
-<img width="1025" height="551" alt="Screenshot 2026-09-27 at 4 44 44 PM" src="https://github.com/user-attachments/assets/9894ac7e-2362-4390-a008-348e1eb2683b" />
-
-```
-users ──< bookings >── diagnostic_tests >── diagnostic_centres
-                │
-                └──< payment_logs
-```
-
-### Table Descriptions
-
-| Table | Purpose |
-|-------|---------|
-| `users` | Stores registered patients. `hashed_password` uses bcrypt; `email` has a unique constraint. |
-| `diagnostic_centres` | Physical locations offering diagnostic services. |
-| `diagnostic_tests` | Individual tests offered by a centre, each with a fixed `price`. |
-| `bookings` | Links a user, test, and centre for a given `appointment_date_time`. `amount` is always copied from the test's price at creation time to prevent spoofing. `status` tracks the payment lifecycle (`PENDING` → `CONFIRMED` / `FAILED`). |
-| `payment_logs` | **Idempotency log** for the webhook endpoint. Every processed `transaction_id` is recorded here. Before updating any booking, the webhook handler checks this table first — if the `transaction_id` already exists, the request is acknowledged and discarded without any DB writes. This prevents duplicate state mutations if the payment gateway retries a webhook. |
-
-### Why `PaymentLog` Is Critical
-
-Without the `PaymentLog` table, a retried webhook could flip a booking's status multiple times (e.g., `CONFIRMED` → `FAILED` → `CONFIRMED`). The log table acts as a **deduplication guard**: the first delivery writes the log and updates the booking atomically; all subsequent deliveries see the existing log entry and short-circuit immediately.
 
 ---
 
