@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 import models
 import schemas
+from config import settings
 from database import get_db
 from models import BookingStatus
 from routers.auth import get_current_user
@@ -58,27 +59,47 @@ def simulate_payment(
 
 # ---------------------------------------------------------------------------
 # POST /payments/webhook/
-# Idempotent Webhook — public, no auth
 # ---------------------------------------------------------------------------
 @router.post(
     "/webhook/",
-    summary="Receive a payment webhook (idempotent, no auth required)",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Receive a payment webhook — processed asynchronously via Celery",
 )
 def payment_webhook(
     payload: schemas.WebhookPayload,
     db: Session = Depends(get_db),
 ):
     """
-    Process an incoming payment webhook from a payment gateway.
+    Accept an incoming payment webhook from a payment gateway.
 
-    **Idempotency guarantee:**  If a `PaymentLog` record already exists for
-    `transaction_id`, the request is a duplicate — return immediately without
-    touching the booking or creating a second log entry.
+    **Production mode** (`CELERY_ENABLED=True`):
+    The payload is dispatched to a Celery worker via `process_webhook_task.delay()`.
+    The endpoint returns **202 Accepted** immediately — the actual DB work
+    (idempotency check, PaymentLog creation, Booking status update) happens
+    in the background worker with up to 3 retries and exponential back-off.
 
-    **Single-transaction write:** The new `PaymentLog` row and the `Booking`
-    status update are committed together, so a partial failure cannot leave
-    the database in an inconsistent state.
+    **Test / development mode** (`CELERY_ENABLED=False`):
+    Falls back to synchronous, in-process processing (identical logic to the
+    original implementation) and returns **200 OK** so the existing test suite
+    continues to pass without a live Redis/Celery instance.
+
+    **Idempotency** is enforced in both paths: replaying the same
+    `transaction_id` is safe and returns the "already processed" message.
     """
+    if settings.CELERY_ENABLED:
+        # ── Async path (production) ─────────────────────────────────────
+        from tasks import process_webhook_task
+
+        process_webhook_task.delay(payload.model_dump())
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "message": "Webhook accepted and queued for processing.",
+                "transaction_id": payload.transaction_id,
+            },
+        )
+
+    # ── Synchronous fallback (tests / local dev without Redis) ──────────
     # --- Idempotency check -----------------------------------------------
     existing_log = (
         db.query(models.PaymentLog)
@@ -113,4 +134,9 @@ def payment_webhook(
 
     db.commit()  # Both writes committed atomically
 
-    return {"message": f"Webhook processed. Booking status updated to {booking.status.value}."}
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "message": f"Webhook processed. Booking status updated to {booking.status.value}."
+        },
+    )

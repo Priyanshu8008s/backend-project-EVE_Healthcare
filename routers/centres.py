@@ -1,6 +1,7 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi_cache.decorator import cache
 from sqlalchemy.orm import Session
 
 import models
@@ -47,6 +48,7 @@ def create_centre(
     response_model=List[schemas.DiagnosticCentreResponse],
     summary="List all diagnostic centres",
 )
+@cache(expire=60)  # Cache for 60 seconds in Redis; invalidated on expiry
 def list_centres(
     skip: int = Query(default=0, ge=0, description="Number of records to skip (offset)"),
     limit: int = Query(default=10, le=100, description="Maximum number of records to return"),

@@ -26,6 +26,10 @@ A production-ready RESTful API built with **FastAPI** and **PostgreSQL** that po
 | **Testing** | pytest + httpx (in-memory SQLite override) |
 | **Rate Limiting** | SlowAPI — 20 req/min per IP on auth endpoints |
 | **Structured Logging** | structlog + asgi-correlation-id (JSON-ready, per-request trace IDs) |
+| **Caching** | fastapi-cache2 + Redis (60 s TTL on `GET /centres/`) |
+| **Task Queue** | Celery + Redis (async webhook processing, 3 retries, exponential back-off) |
+| **Configuration** | pydantic-settings — all secrets loaded from `.env` / environment variables |
+| **Containerisation** | Full Docker Compose stack (db, redis, web, celery_worker) |
 
 Core capabilities:
 
@@ -43,34 +47,63 @@ Core capabilities:
 
 ### Prerequisites
 
-- Python 3.11+
-- Docker & Docker Compose
+- Docker & Docker Compose (recommended — runs the entire stack)
+- *or* Python 3.11+ for local venv development
 
-### Step-by-step
+---
+
+### Option A — Full Docker stack (recommended)
+
+This is the primary way to run the application. A single command builds and
+starts all four services: **PostgreSQL**, **Redis**, **FastAPI**, and the
+**Celery worker**. Migrations are applied automatically on startup.
 
 ```bash
-# 1. Clone the repository
+# Clone the repository
 git clone <repo-url>
 cd backend-project-EVE_Healthcare
 
-# 2. Start the PostgreSQL database
-docker compose up -d
+# (Optional) set a strong SECRET_KEY before starting
+export SECRET_KEY=your-super-secret-key
 
-# 3. Create and activate the virtual environment
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-
-# 4. Install all locked dependencies
-pip install -r requirements.txt
-
-# 5. Apply database migrations
-alembic upgrade head
-
-# 6. Start the development server
-uvicorn main:app --reload
+# Build images and start all services
+docker compose up --build
 ```
 
 The API will be available at **http://127.0.0.1:8000**.
+Swagger UI: **http://127.0.0.1:8000/docs**
+
+To stop all services:
+```bash
+docker compose down
+```
+
+---
+
+### Option B — Local virtual environment (development)
+
+Use this if you want hot-reload. You still need Docker running for PostgreSQL and Redis.
+
+```bash
+# 1. Start only the infrastructure services
+docker compose up -d db redis
+
+# 2. Create and activate the virtual environment
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+
+# 3. Install all locked dependencies
+pip install -r requirements.txt
+
+# 4. Apply database migrations
+alembic upgrade head
+
+# 5. Start the FastAPI dev server
+uvicorn main:app --reload
+
+# 6. (Optional) Start a local Celery worker in a second terminal
+celery -A tasks worker --loglevel=info
+```
 
 ### Run Tests
 
@@ -78,7 +111,8 @@ The API will be available at **http://127.0.0.1:8000**.
 pytest tests/test_api.py -v
 ```
 
-Tests use an in-memory SQLite database — no running Postgres instance required.
+Tests use an in-memory SQLite database and an in-memory cache backend —
+no running Postgres, Redis, or Celery instance required.
 
 ---
 ## Database / Schema Design
@@ -121,11 +155,11 @@ Use the **Authorize 🔒** button in Swagger to authenticate with a bearer token
 | `POST` | `/auth/signup` | — | Register a new user |
 | `POST` | `/auth/login` | — | Obtain a JWT token |
 | `POST` | `/centres/` | — | Create a diagnostic centre |
-| `GET` | `/centres/` | — | List all centres with their tests. Supports pagination: `?skip=0&limit=10` (max `limit=100`) |
+| `GET` | `/centres/` | — | List all centres with their tests. Supports pagination: `?skip=0&limit=10` (max `limit=100`). Response cached in Redis for 60 s. |
 | `POST` | `/centres/{id}/tests/` | — | Add a test to a centre |
 | `POST` | `/bookings/` | ✅ | Create a booking |
 | `POST` | `/payments/` | ✅ | Simulate a payment |
-| `POST` | `/payments/webhook/` | — | Receive a payment webhook |
+| `POST` | `/payments/webhook/` | — | Accept a webhook — returns **202 Accepted** immediately; processing is handled asynchronously by the Celery worker |
 
 ### Example `curl` Commands
 
@@ -190,6 +224,10 @@ The following production-grade improvements were proactively built beyond the co
 | **Pagination on list endpoints** | `GET /centres/` accepts `?skip=0&limit=10` (capped at 100). Enforced at the Pydantic/FastAPI layer — invalid values return `422` before reaching the DB. |
 | **Rate limiting on auth endpoints** | `POST /auth/signup` and `POST /auth/login` are decorated with `@limiter.limit("20/minute")` via SlowAPI. Exceeding the limit returns `429 Too Many Requests`. |
 | **Structured logging & request tracing** | Every HTTP request logs method, path, status code, and elapsed time via structlog. A `X-Correlation-ID` header is generated per request by `asgi-correlation-id` and bound into every log line automatically. Flip `json_logs=True` in `main.py` for production JSON output. |
+| **Environment-based configuration** | All secrets (`DATABASE_URL`, `SECRET_KEY`, `REDIS_URL`, etc.) are loaded from `.env` via `pydantic-settings`. No hardcoded credentials. |
+| **Redis caching** | `GET /centres/` responses are cached in Redis for 60 seconds via `fastapi-cache2`. Cache is initialised on application startup via the FastAPI lifespan event. |
+| **Celery async webhooks** | `POST /payments/webhook/` returns **202 Accepted** immediately and enqueues `process_webhook_task` on a Redis broker. The Celery worker processes the payload with idempotency checks, up to 3 retries, and exponential back-off (60 s, 120 s, 240 s). |
+| **Full Dockerisation** | A `Dockerfile` and updated `docker-compose.yml` orchestrate all four services (db, redis, web, celery_worker). `docker compose up --build` is the single command to run the entire stack. |
 
 ---
 
@@ -197,7 +235,7 @@ The following production-grade improvements were proactively built beyond the co
 
 | Feature | Rationale |
 |---------|-----------|
-| **Environment-based configuration** | Move `DATABASE_URL`, `SECRET_KEY`, and `ACCESS_TOKEN_EXPIRE_MINUTES` to a `.env` file loaded via `pydantic-settings`. Eliminates hardcoded secrets. |
-| **Redis caching for `GET /centres/`** | The full centre + tests listing is an expensive query that rarely changes. Caching with a short TTL (e.g., 60 s) would dramatically reduce DB load under traffic. |
-| **Celery + Redis for webhook retries** | Instead of processing webhooks synchronously, push them onto a Celery task queue. Failed webhook deliveries would be retried with exponential back-off, making the system resilient to transient DB errors. |
-| **Docker Compose for the app itself** | Add a second service to `docker-compose.yml` for the FastAPI app so the entire stack can be started with a single `docker compose up`. |
+| **Cache invalidation strategy** | Currently the Redis cache expires after 60 s TTL. Adding explicit key invalidation on `POST /centres/` or `POST /centres/{id}/tests/` mutations would make the list endpoint immediately consistent. |
+| **Webhook dead-letter queue** | After 3 Celery retries the task is silently dropped. Routing failed tasks to a dead-letter queue (e.g., a separate Redis list or a monitoring tool like Flower) would make failures observable and re-processable. |
+| **Role-based access control (RBAC)** | Currently any authenticated user can create centres and tests. Adding an `is_admin` flag to `User` and enforcing it on write endpoints would harden the permission model. |
+| **Booking cancellation endpoint** | There is no `DELETE /bookings/{id}` or status-transition endpoint. Adding one with appropriate business rules (e.g., cannot cancel a confirmed + paid booking) would make the system more complete. |

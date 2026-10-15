@@ -9,9 +9,8 @@ from jwt.exceptions import InvalidTokenError
 import models
 import schemas
 from database import get_db
+from config import settings
 from security import (
-    SECRET_KEY,
-    ALGORITHM,
     verify_password,
     get_password_hash,
     create_access_token,
@@ -114,7 +113,7 @@ def get_current_user(
     )
 
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         email: str | None = payload.get("sub")
         if email is None:
             raise credentials_exception

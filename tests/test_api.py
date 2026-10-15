@@ -9,8 +9,13 @@ fixtures below.
 import uuid
 import pytest
 from fastapi.testclient import TestClient
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.inmemory import InMemoryBackend
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+import config  # imported before main so we can patch settings
+config.settings.CELERY_ENABLED = False  # disable async dispatch — no broker needed
 
 from main import app
 from database import get_db
@@ -39,6 +44,10 @@ def override_get_db():
 @pytest.fixture(scope="module", autouse=True)
 def setup_test_db():
     """Create all tables before the module's tests run; drop them after."""
+    # Initialise cache with an in-memory backend so @cache decorators don't
+    # require a live Redis connection during tests.
+    FastAPICache.init(InMemoryBackend(), prefix="test-cache")
+
     Base.metadata.create_all(bind=test_engine)
     app.dependency_overrides[get_db] = override_get_db
     yield

@@ -1,10 +1,76 @@
 version: '3.8'
+
 services:
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
   db:
     image: postgres:15
+    restart: unless-stopped
     environment:
       POSTGRES_USER: eve_user
       POSTGRES_PASSWORD: eve_password
       POSTGRES_DB: eve_diagnostic
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eve_user -d eve_diagnostic"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Redis (broker + cache backend) ────────────────────────────────────────
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── FastAPI web server ────────────────────────────────────────────────────
+  web:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg2://eve_user:eve_password@db:5432/eve_diagnostic
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-YOUR_SECRET_KEY}
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      CELERY_ENABLED: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn main:app --host 0.0.0.0 --port 8000"
+
+  # ── Celery worker ─────────────────────────────────────────────────────────
+  celery_worker:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg2://eve_user:eve_password@db:5432/eve_diagnostic
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-YOUR_SECRET_KEY}
+      CELERY_ENABLED: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A tasks worker --loglevel=info
+
+volumes:
+  postgres_data:

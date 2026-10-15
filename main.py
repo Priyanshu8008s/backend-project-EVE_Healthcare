@@ -1,11 +1,16 @@
 import time
-import structlog
+from contextlib import asynccontextmanager
 
+import structlog
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import FastAPI, Request
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.redis import RedisBackend
+from redis import asyncio as aioredis
 from slowapi.errors import RateLimitExceeded
 from slowapi.extension import _rate_limit_exceeded_handler
 
+from config import settings
 from logger import configure_logging
 from limiter import limiter
 from routers import auth, centres, bookings, payments
@@ -13,9 +18,31 @@ from routers import auth, centres, bookings, payments
 # ---------------------------------------------------------------------------
 # Logging — initialise before the app so the first structlog call works
 # ---------------------------------------------------------------------------
-configure_logging(json_logs=False)   # flip to True in production
+configure_logging(json_logs=False)  # flip to True in production
 
 log = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# Lifespan: startup / shutdown events
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Initialise application-wide resources on startup and clean them up on shutdown.
+
+    Currently manages:
+    - FastAPICache backed by Redis (for caching GET /centres/).
+    """
+    redis_client = aioredis.from_url(
+        settings.REDIS_URL, encoding="utf-8", decode_responses=True
+    )
+    FastAPICache.init(RedisBackend(redis_client), prefix="eve-cache")
+    log.info("FastAPICache initialised", redis_url=settings.REDIS_URL)
+    yield
+    # Graceful shutdown — nothing extra needed; aioredis manages its pool
+    log.info("Application shutting down.")
+
 
 # ---------------------------------------------------------------------------
 # App
@@ -26,7 +53,8 @@ app = FastAPI(
         "Backend API for the EVE Healthcare diagnostic platform. "
         "Provides authentication, diagnostic centre management, test booking, and payment processing."
     ),
-    version="0.4.0",
+    version="0.5.0",
+    lifespan=lifespan,
 )
 
 # ---------------------------------------------------------------------------
@@ -49,8 +77,6 @@ async def logging_middleware(request: Request, call_next):
     """
     from asgi_correlation_id import correlation_id
 
-    # Bind per-request context that structlog.contextvars.merge_contextvars
-    # will inject into every log record for this request.
     structlog.contextvars.clear_contextvars()
     structlog.contextvars.bind_contextvars(
         correlation_id=correlation_id.get(),
